@@ -1,14 +1,17 @@
 import logging
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+import re
+from datetime import datetime
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, filters,
+    ContextTypes, ConversationHandler, CallbackQueryHandler
+)
 
-# Stati della conversazione
 CHOOSING, EVENT_NAME, EVENT_DATE, EVENT_START, EVENT_END, EVENT_PEOPLE, EVENT_COLOR, CONFIRM = range(8)
 
-# Abilita il logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Start / ciao
+# /start o "ciao"
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     reply_keyboard = [["📅 New Outlook Event"]]
     await update.message.reply_text(
@@ -17,7 +20,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     return CHOOSING
 
-# Scelta dell'azione
+# scelta
 async def choose_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text
     if "Outlook" in text:
@@ -31,27 +34,70 @@ async def get_event_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return EVENT_DATE
 
 async def get_event_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["date"] = update.message.text
-    await update.message.reply_text("Orario di inizio? (es: 14:00)")
-    return EVENT_START
+    date_text = update.message.text
+    try:
+        datetime.strptime(date_text, "%d/%m/%Y")
+        context.user_data["date"] = date_text
+        await update.message.reply_text("Orario di inizio? (formato: HH:MM)")
+        return EVENT_START
+    except ValueError:
+        await update.message.reply_text("⚠️ Formato data non valido. Usa GG/MM/AAAA.")
+        return EVENT_DATE
 
 async def get_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["start"] = update.message.text
-    await update.message.reply_text("Orario di fine? (es: 15:00)")
-    return EVENT_END
+    time_text = update.message.text
+    if re.match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", time_text):
+        context.user_data["start"] = time_text
+        await update.message.reply_text("Orario di fine? (formato: HH:MM)")
+        return EVENT_END
+    else:
+        await update.message.reply_text("⚠️ Orario non valido. Usa HH:MM.")
+        return EVENT_START
 
 async def get_event_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["end"] = update.message.text
-    await update.message.reply_text("Chi vuoi invitare? (email separate da virgola)")
-    return EVENT_PEOPLE
+    time_text = update.message.text
+    if re.match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", time_text):
+        context.user_data["end"] = time_text
+
+        # Inline buttons per "Nessuno" o testo
+        keyboard = [[InlineKeyboardButton("Nessuno", callback_data="nessuno")]]
+        await update.message.reply_text(
+            "Chi vuoi invitare? Scrivi una o più email separate da virgola, oppure clicca su 'Nessuno'.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return EVENT_PEOPLE
+    else:
+        await update.message.reply_text("⚠️ Orario non valido. Usa HH:MM.")
+        return EVENT_END
 
 async def get_event_people(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["people"] = update.message.text
-    await update.message.reply_text("Colore/categoria (es: Lavoro, Personale...)")
+    emails = update.message.text
+    if emails.strip().lower() == "nessuno":
+        context.user_data["people"] = "Nessuno"
+    else:
+        # semplice validazione base
+        email_list = [e.strip() for e in emails.split(",")]
+        if all(re.match(r"[^@]+@[^@]+\.[^@]+", e) for e in email_list):
+            context.user_data["people"] = ", ".join(email_list)
+        else:
+            await update.message.reply_text("⚠️ Inserisci email valide, separate da virgole, oppure scrivi 'Nessuno'.")
+            return EVENT_PEOPLE
+
+    await update.message.reply_text("Categoria? (scrivila pure, nella fase 2 ti proporremo l’elenco da Outlook)")
+    return EVENT_COLOR
+
+# Gestione del bottone "Nessuno"
+async def people_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data["people"] = "Nessuno"
+    await query.edit_message_text("Invitati: Nessuno")
+    await query.message.reply_text("Categoria? (scrivila pure, nella fase 2 ti proporremo l’elenco da Outlook)")
     return EVENT_COLOR
 
 async def get_event_color(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["color"] = update.message.text
+
     summary = (
         f"📝 **Riepilogo Evento**\n"
         f"📌 Nome: {context.user_data['name']}\n"
@@ -65,28 +111,33 @@ async def get_event_color(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return CONFIRM
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("✅ Evento pronto! (in futuro sarà creato su Outlook)")
+    await update.message.reply_text("✅ OK, evento creato!")
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("❌ Operazione annullata.")
     return ConversationHandler.END
 
-# Main
 def main():
     import os
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     application = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start), MessageHandler(filters.TEXT & filters.Regex("(?i)^ciao$"), start)],
+        entry_points=[
+            CommandHandler("start", start),
+            MessageHandler(filters.TEXT & filters.Regex("(?i)^ciao$"), start)
+        ],
         states={
             CHOOSING: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_action)],
             EVENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_event_name)],
             EVENT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_event_date)],
             EVENT_START: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_event_start)],
             EVENT_END: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_event_end)],
-            EVENT_PEOPLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_event_people)],
+            EVENT_PEOPLE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_event_people),
+                CallbackQueryHandler(people_button_handler)
+            ],
             EVENT_COLOR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_event_color)],
             CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
         },
