@@ -11,29 +11,32 @@ CHOOSING, EVENT_NAME, EVENT_DATE, EVENT_START, EVENT_END, EVENT_PEOPLE, EVENT_CO
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# /start o "ciao"
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    reply_keyboard = [["📅 New Outlook Event"]]
+# "Ciao" inizia il flusso
+async def ciao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    reply_keyboard = [["📅 Nuovo Evento Calendario"]]
     await update.message.reply_text(
         "Ciao! Cosa vuoi fare?",
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True),
     )
     return CHOOSING
 
-# scelta
 async def choose_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text
-    if "Outlook" in text:
+    if "Evento" in text:
         await update.message.reply_text("Come si chiama l’evento?")
         return EVENT_NAME
     return CHOOSING
 
 async def get_event_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text.lower() == "cancella":
+        return await cancel(update, context)
     context.user_data["name"] = update.message.text
     await update.message.reply_text("Che data? (formato: GG/MM/AAAA)")
     return EVENT_DATE
 
 async def get_event_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text.lower() == "cancella":
+        return await cancel(update, context)
     date_text = update.message.text
     try:
         datetime.strptime(date_text, "%d/%m/%Y")
@@ -45,6 +48,8 @@ async def get_event_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return EVENT_DATE
 
 async def get_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text.lower() == "cancella":
+        return await cancel(update, context)
     time_text = update.message.text
     if re.match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", time_text):
         context.user_data["start"] = time_text
@@ -55,11 +60,11 @@ async def get_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return EVENT_START
 
 async def get_event_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text.lower() == "cancella":
+        return await cancel(update, context)
     time_text = update.message.text
     if re.match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", time_text):
         context.user_data["end"] = time_text
-
-        # Inline buttons per "Nessuno" o testo
         keyboard = [[InlineKeyboardButton("Nessuno", callback_data="nessuno")]]
         await update.message.reply_text(
             "Chi vuoi invitare? Scrivi una o più email separate da virgola, oppure clicca su 'Nessuno'.",
@@ -71,11 +76,12 @@ async def get_event_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return EVENT_END
 
 async def get_event_people(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text.lower() == "cancella":
+        return await cancel(update, context)
     emails = update.message.text
     if emails.strip().lower() == "nessuno":
         context.user_data["people"] = "Nessuno"
     else:
-        # semplice validazione base
         email_list = [e.strip() for e in emails.split(",")]
         if all(re.match(r"[^@]+@[^@]+\.[^@]+", e) for e in email_list):
             context.user_data["people"] = ", ".join(email_list)
@@ -86,18 +92,17 @@ async def get_event_people(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text("Categoria? (scrivila pure, nella fase 2 ti proporremo l’elenco da Outlook)")
     return EVENT_COLOR
 
-# Gestione del bottone "Nessuno"
 async def people_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
+    await update.callback_query.answer()
     context.user_data["people"] = "Nessuno"
-    await query.edit_message_text("Invitati: Nessuno")
-    await query.message.reply_text("Categoria? (scrivila pure, nella fase 2 ti proporremo l’elenco da Outlook)")
+    await update.callback_query.edit_message_text("Invitati: Nessuno")
+    await update.callback_query.message.reply_text("Categoria? (scrivila pure, nella fase 2 ti proporremo l’elenco da Outlook)")
     return EVENT_COLOR
 
 async def get_event_color(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text.lower() == "cancella":
+        return await cancel(update, context)
     context.user_data["color"] = update.message.text
-
     summary = (
         f"📝 **Riepilogo Evento**\n"
         f"📌 Nome: {context.user_data['name']}\n"
@@ -111,6 +116,8 @@ async def get_event_color(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return CONFIRM
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text.lower() == "cancella":
+        return await cancel(update, context)
     await update.message.reply_text("✅ OK, evento creato!")
     return ConversationHandler.END
 
@@ -125,8 +132,7 @@ def main():
 
     conv_handler = ConversationHandler(
         entry_points=[
-            CommandHandler("start", start),
-            MessageHandler(filters.TEXT & filters.Regex("(?i)^ciao$"), start)
+            MessageHandler(filters.TEXT & filters.Regex("^Ciao$"), ciao)
         ],
         states={
             CHOOSING: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_action)],
